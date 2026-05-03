@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>小組通訊 - GitHub 版</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <!-- 核心 SDK -->
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap');
+        * { -webkit-tap-highlight-color: transparent; }
+        body { font-family: 'Noto Sans TC', sans-serif; background: #f1f5f9; }
+        .app-container { max-width: 450px; margin: 0 auto; height: 100vh; background: white; display: flex; flex-direction: column; box-shadow: 0 0 50px rgba(0,0,0,0.05); }
+        .content { flex: 1; overflow-y: auto; background: #f8fafc; }
+        .btn-active { color: #10b981 !important; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <!-- 標頭 -->
+        <header id="app-header" class="hidden h-16 border-b flex justify-between items-center px-6 bg-white shrink-0">
+            <div>
+                <h1 class="text-lg font-black text-slate-800">小組名</h1>
+                <p id="user-tag" class="text-[9px] font-bold text-emerald-500 uppercase tracking-widest"></p>
+            </div>
+            <button onclick="handleLogout()" class="text-slate-300 hover:text-red-500 transition-colors"><i data-lucide="log-out"></i></button>
+        </header>
+
+        <!-- 主區塊 -->
+        <main id="app-main" class="content no-scrollbar">
+            <div id="boot-loader" class="h-full flex flex-col items-center justify-center space-y-4">
+                <div class="w-10 h-10 border-4 border-slate-100 border-t-emerald-500 rounded-full animate-spin"></div>
+                <p class="text-slate-400 text-xs font-medium">系統啟動中...</p>
+            </div>
+        </main>
+
+        <!-- 導覽列 -->
+        <nav id="app-nav" class="hidden h-20 border-t bg-white flex shrink-0 pb-safe">
+            <button onclick="setTab('chat')" id="nav-chat" class="flex-1 flex flex-col items-center justify-center text-slate-400"><i data-lucide="message-circle" class="w-6 h-6"></i><span class="text-[10px] mt-1 font-bold">團契</span></button>
+            <button onclick="setTab('events')" id="nav-events" class="flex-1 flex flex-col items-center justify-center text-slate-400"><i data-lucide="calendar" class="w-6 h-6"></i><span class="text-[10px] mt-1 font-bold">活動</span></button>
+            <button onclick="setTab('admin')" id="nav-admin" class="hidden flex-1 flex flex-col items-center justify-center text-slate-400"><i data-lucide="shield-check" class="w-6 h-6"></i><span class="text-[10px] mt-1 font-bold">管理</span></button>
+        </nav>
+    </div>
+
+    <script>
+        const config = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : { apiKey: "" };
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'church-stable-v1';
+        
+        let db, auth;
+        let state = { user: null, isAdmin: false, currentTab: 'chat', messages: [], events: [], members: [] };
+
+        async function init() {
+            try {
+                if (!firebase.apps.length) firebase.initializeApp(config);
+                db = firebase.firestore();
+                auth = firebase.auth();
+                await auth.signInAnonymously();
+
+                const saved = localStorage.getItem('church_session');
+                if (saved) {
+                    const d = JSON.parse(saved);
+                    state.user = d.user; state.isAdmin = d.isAdmin;
+                }
+                
+                startSync();
+            } catch (e) { console.log("Offline Mode"); }
+            render();
+        }
+
+        function startSync() {
+            db.collection(`artifacts/${appId}/public/data/messages`).orderBy('ts', 'desc').limit(40).onSnapshot(s => {
+                state.messages = s.docs.map(d => d.data()).reverse();
+                if(state.currentTab === 'chat') draw();
+            });
+            db.collection(`artifacts/${appId}/public/data/events`).onSnapshot(s => {
+                state.events = s.docs.map(d => d.data()).sort((a,b)=>b.ts - a.ts);
+                if(state.currentTab === 'events') draw();
+            });
+            db.collection(`artifacts/${appId}/public/data/users`).onSnapshot(s => {
+                state.members = s.docs.map(d => d.data());
+            });
+        }
+
+        function render() {
+            const m = document.getElementById('app-main');
+            const h = document.getElementById('app-header');
+            const n = document.getElementById('app-nav');
+            const ad = document.getElementById('nav-admin');
+
+            if (!state.user && !state.isAdmin) {
+                h.classList.add('hidden'); n.classList.add('hidden');
+                m.innerHTML = `
+                    <div class="h-full flex flex-col items-center justify-center p-10 bg-white">
+                        <div class="w-16 h-16 bg-emerald-600 rounded-[2rem] flex items-center justify-center text-white shadow-xl mb-8"><i data-lucide="lock" class="w-8 h-8"></i></div>
+                        <div class="w-full space-y-4">
+                            <input id="u" type="text" placeholder="使用者帳號" class="w-full p-4 bg-slate-50 rounded-2xl border-none outline-none focus:ring-2 focus:ring-emerald-500">
+                            <input id="p" type="password" placeholder="登入密碼" class="w-full p-4 bg-slate-50 rounded-2xl border-none outline-none focus:ring-2 focus:ring-emerald-500">
+                            <button onclick="handleLogin()" class="w-full bg-slate-900 text-white font-black py-4 rounded-2xl active:scale-95 transition-all">進入小組系統</button>
+                        </div>
+                    </div>
+                `;
+            } else {
+                h.classList.remove('hidden'); n.classList.remove('hidden');
+                document.getElementById('user-tag').innerText = state.isAdmin ? 'Administrator' : state.user.name;
+                ad.classList.toggle('hidden', !state.isAdmin);
+                draw();
+            }
+            lucide.createIcons();
+        }
+
+        function draw() {
+            const m = document.getElementById('app-main');
+            if (state.currentTab === 'chat') {
+                m.innerHTML = `
+                    <div class="flex flex-col h-full bg-white">
+                        <div id="chat-flow" class="flex-1 overflow-y-auto p-4 space-y-4 no-scrollbar">
+                            ${state.messages.map(msg => {
+                                const isMe = state.isAdmin ? (msg.uid==='admin') : (state.user && msg.uid===state.user.username);
+                                return `
+                                    <div class="flex ${isMe?'justify-end':'justify-start'}">
+                                        <div class="max-w-[85%]">
+                                            <p class="text-[9px] font-bold text-slate-400 mb-1 ${isMe?'text-right':''}">${msg.uName}</p>
+                                            <div class="p-3 rounded-2xl text-sm ${isMe?'bg-emerald-600 text-white rounded-tr-none shadow-sm':'bg-slate-100 text-slate-700 rounded-tl-none'}">${msg.text}</div>
+                                        </div>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                        <div class="p-4 border-t flex gap-2 bg-white">
+                            <input id="chat-in" placeholder="分享一些話..." class="flex-1 p-3 bg-slate-50 rounded-xl outline-none text-sm">
+                            <button onclick="doSend()" class="bg-emerald-600 text-white w-12 h-12 rounded-xl flex items-center justify-center active:scale-90"><i data-lucide="send"></i></button>
+                        </div>
+                    </div>
+                `;
+                const f = document.getElementById('chat-flow'); f.scrollTop = f.scrollHeight;
+            } else if (state.currentTab === 'events') {
+                m.innerHTML = `<div class="p-4 space-y-4">${state.events.map(e => {
+                    const uid = state.isAdmin?'admin':state.user.username;
+                    const res = e.responses?.[uid];
+                    return `
+                        <div class="bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm space-y-4">
+                            <div><h3 class="font-black text-slate-800 text-lg">${e.title}</h3><p class="text-xs text-slate-400 font-bold">${e.date} / ${e.location}</p></div>
+                            <div class="flex gap-2">
+                                <button onclick="doRSVP('${e.id}','yes')" class="flex-1 py-3 rounded-xl font-bold text-xs ${res?.status==='yes'?'bg-emerald-600 text-white':'bg-emerald-50 text-emerald-600'}">報名參加</button>
+                                <button onclick="doRSVP('${e.id}','no')" class="flex-1 py-3 rounded-xl font-bold text-xs ${res?.status==='no'?'bg-slate-800 text-white':'bg-slate-100 text-slate-400'}">有事請假</button>
+                            </div>
+                        </div>
+                    `;
+                }).join('') || '<p class="text-center text-slate-300 mt-20">暫無新活動</p>'}</div>`;
+            } else {
+                m.innerHTML = `
+                    <div class="p-6 space-y-8">
+                        <div class="bg-slate-900 text-white p-7 rounded-[2.5rem] shadow-xl">
+                            <h3 class="font-black mb-4 flex items-center gap-2"><i data-lucide="plus-circle" class="text-emerald-400"></i> 新活動發佈</h3>
+                            <div class="space-y-3">
+                                <input id="ad-et" placeholder="活動標題" class="w-full p-3 bg-white/10 rounded-xl border-none outline-none text-sm text-white">
+                                <input id="ad-ed" type="date" class="w-full p-3 bg-white/10 rounded-xl border-none outline-none text-sm text-white">
+                                <button onclick="publish()" class="w-full bg-emerald-500 py-3 rounded-xl font-black shadow-lg">確認同步</button>
+                            </div>
+                        </div>
+                        <div class="space-y-4">
+                            <h3 class="font-black px-2">成員權限管理</h3>
+                            <div class="bg-white border rounded-[2rem] p-5 space-y-3 shadow-sm">
+                                <input id="ad-un" placeholder="姓名" class="w-full p-3 bg-slate-50 rounded-xl text-sm border-none">
+                                <input id="ad-uu" placeholder="帳號" class="w-full p-3 bg-slate-50 rounded-xl text-sm border-none">
+                                <button onclick="createMember()" class="w-full bg-slate-800 text-white py-3 rounded-xl font-bold text-xs">建立帳號</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+            lucide.createIcons();
+            updateNav();
+        }
+
+        function handleLogin() {
+            const u = document.getElementById('u').value.trim();
+            const p = document.getElementById('p').value.trim();
+            if(u === 'admin' && p === 'Lititup') { state.isAdmin = true; }
+            else {
+                const f = state.members.find(m => m.username === u && m.password === p);
+                if(f) state.user = f; else { alert("登入資料無效"); return; }
+            }
+            localStorage.setItem('church_session', JSON.stringify({ user: state.user, isAdmin: state.isAdmin }));
+            render();
+        }
+
+        async function doSend() {
+            const i = document.getElementById('chat-in'); const t = i.value.trim(); if(!t) return;
+            await db.collection(`artifacts/${appId}/public/data/messages`).add({
+                uid: state.isAdmin?'admin':state.user.username,
+                uName: state.isAdmin?'管理員':state.user.name,
+                text: t, ts: Date.now()
+            });
+            i.value = '';
+        }
+
+        async function doRSVP(eid, status) {
+            const uid = state.isAdmin ? 'admin' : state.user.username;
+            const up = {}; up[`responses.${uid}`] = { status, ts: Date.now() };
+            await db.collection(`artifacts/${appId}/public/data/events`).doc(eid).update(up);
+        }
+
+        async function publish() {
+            const t = document.getElementById('ad-et').value; if(!t) return;
+            const id = Date.now().toString();
+            await db.collection(`artifacts/${appId}/public/data/events`).doc(id).set({
+                id, title: t, date: document.getElementById('ad-ed').value,
+                location: "小組聚會", responses: {}, ts: Date.now()
+            });
+            alert("活動已更新"); setTab('events');
+        }
+
+        async function createMember() {
+            const u = document.getElementById('ad-uu').value;
+            await db.collection(`artifacts/${appId}/public/data/users`).doc(u).set({
+                name: document.getElementById('ad-un').value, username: u, password: '123'
+            });
+            alert("成員資料已儲存"); render();
+        }
+
+        function setTab(t) { state.currentTab = t; draw(); }
+        function updateNav() {
+            ['chat','events','admin'].forEach(t => {
+                const el = document.getElementById('nav-'+t);
+                if(el) el.classList.toggle('btn-active', state.currentTab === t);
+            });
+        }
+        function handleLogout() { localStorage.clear(); location.reload(); }
+
+        init();
+    </script>
+</body>
+</html>
